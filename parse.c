@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "lex.h"
 
@@ -19,6 +20,32 @@ Parser parser_new(Lexer *lexer) {
     parser_next_token(&parser);
 
     return parser;
+}
+
+bool token_set_contains(TokenSet *set, Token token) {
+    for (size_t i = 0; i < set->len; i++) {
+        if (strncmp(
+                set->tokens[i].text_start, token.text_start, token.text_len
+            ) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool token_set_insert(TokenSet *set, Token token) {
+    if (token_set_contains(set, token)) {
+        return false;
+    }
+
+    if (set->len >= TOKEN_SET_CAPACITY) {
+        fprintf(stderr, "Error: Maximum tokens capacity exceeded\n");
+        exit(EXIT_FAILURE);
+    }
+
+    set->tokens[set->len++] = token;
+
+    return true;
 }
 
 bool parser_check_token(Parser *parser, TokenType kind) {
@@ -57,12 +84,20 @@ void parser_primary(Parser *parser) {
     if (parser_check_token(parser, TOKEN_NUMBER)) {
         parser_next_token(parser);
     } else if (parser_check_token(parser, TOKEN_IDENT)) {
+        if (!token_set_contains(&parser->symbols, parser->curr_token)) {
+            fprintf(
+                stderr,
+                "Error: Referencing variable before assignment: %.*s\n",
+                (int)parser->curr_token.text_len,
+                parser->curr_token.text_start
+            );
+            exit(EXIT_FAILURE);
+        }
         parser_next_token(parser);
     } else {
-        fprintf(stderr, "Error: ");
         fprintf(
             stderr,
-            "Unexpected token at %.*s\n",
+            "Error: Unexpected token at %.*s\n",
             (int)parser->curr_token.text_len,
             parser->curr_token.text_start
         );
@@ -118,10 +153,9 @@ void parser_comparison(Parser *parser) {
         parser_next_token(parser);
         parser_expression(parser);
     } else {
-        fprintf(stderr, "Error: ");
         fprintf(
             stderr,
-            "Expected comparison operator at: %.*s\n",
+            "Error: Expected comparison operator at: %.*s\n",
             (int)parser->curr_token.text_len,
             parser->curr_token.text_start
         );
@@ -174,31 +208,46 @@ void parser_statement(Parser *parser) {
     } else if (parser_check_token(parser, TOKEN_LABEL)) {
         printf("STATEMENT-LABEL\n");
         parser_next_token(parser);
+
+        if (!token_set_insert(&parser->labels_declared, parser->curr_token)) {
+            fprintf(
+                stderr,
+                "Error: Label already exists: %.*s\n",
+                (int)parser->curr_token.text_len,
+                parser->curr_token.text_start
+            );
+            exit(EXIT_FAILURE);
+        }
+
         parser_match(parser, TOKEN_IDENT);
 
     } else if (parser_check_token(parser, TOKEN_GOTO)) {
         printf("STATEMENT-GOTO\n");
         parser_next_token(parser);
+        token_set_insert(&parser->labels_gotoed, parser->curr_token);
         parser_match(parser, TOKEN_IDENT);
 
     } else if (parser_check_token(parser, TOKEN_LET)) {
         printf("STATEMENT-LET\n");
         parser_next_token(parser);
+        token_set_insert(&parser->symbols, parser->curr_token);
+
         parser_match(parser, TOKEN_IDENT);
         parser_match(parser, TOKEN_EQ);
+
         parser_expression(parser);
 
     } else if (parser_check_token(parser, TOKEN_INPUT)) {
         printf("STATEMENT-INPUT\n");
         parser_next_token(parser);
+        token_set_insert(&parser->symbols, parser->curr_token);
         parser_match(parser, TOKEN_IDENT);
 
     } else {
-        fprintf(stderr, "Error: ");
         // TODO: Look into creating a function to print the TokenType enum names
         fprintf(
             stderr,
-            "Invalid statement at: %.*s\n",
+            "Error: Invalid statement at: %.*s\n",
             (int)parser->curr_token.text_len,
             parser->curr_token.text_start
         );
@@ -217,5 +266,18 @@ void parser_program(Parser *parser) {
 
     while (!parser_check_token(parser, TOKEN_EOF)) {
         parser_statement(parser);
+    }
+
+    for (size_t i = 0; i < parser->labels_gotoed.len; i++) {
+        Token gotoed_token = parser->labels_gotoed.tokens[i];
+        if (!token_set_contains(&parser->labels_declared, gotoed_token)) {
+            fprintf(
+                stderr,
+                "Error: Attempting to GOTO to undeclared label: %.*s\n",
+                (int)gotoed_token.text_len,
+                gotoed_token.text_start
+            );
+            exit(EXIT_FAILURE);
+        }
     }
 }
