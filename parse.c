@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "emit.h"
 #include "lex.h"
 
 void parser_next_token(Parser *parser) {
@@ -13,8 +14,8 @@ void parser_next_token(Parser *parser) {
     parser->peek_token = lexer_get_token(parser->lexer);
 }
 
-Parser parser_new(Lexer *lexer) {
-    Parser parser = {.lexer = lexer};
+Parser parser_new(Lexer *lexer, Emitter *emitter) {
+    Parser parser = {.lexer = lexer, .emitter = emitter};
     // Call this twice to initialize current and peek.
     parser_next_token(&parser);
     parser_next_token(&parser);
@@ -67,7 +68,6 @@ void parser_match(Parser *parser, TokenType kind) {
 }
 
 void parser_nl(Parser *parser) {
-    printf("NEWLINE\n");
     parser_match(parser, TOKEN_NEWLINE);
     while (parser_check_token(parser, TOKEN_NEWLINE)) {
         parser_next_token(parser);
@@ -75,13 +75,8 @@ void parser_nl(Parser *parser) {
 }
 
 void parser_primary(Parser *parser) {
-    printf(
-        "PRIMARY (%.*s)\n",
-        (int)parser->curr_token.text_len,
-        parser->curr_token.text_start
-    );
-
     if (parser_check_token(parser, TOKEN_NUMBER)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
     } else if (parser_check_token(parser, TOKEN_IDENT)) {
         if (!token_set_contains(&parser->symbols, parser->curr_token)) {
@@ -93,6 +88,7 @@ void parser_primary(Parser *parser) {
             );
             exit(EXIT_FAILURE);
         }
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
     } else {
         fprintf(
@@ -106,31 +102,29 @@ void parser_primary(Parser *parser) {
 }
 
 void parser_unary(Parser *parser) {
-    printf("UNARY\n");
     if (parser_check_token(parser, TOKEN_PLUS) ||
         parser_check_token(parser, TOKEN_MINUS)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
     }
     parser_primary(parser);
 }
 
 void parser_term(Parser *parser) {
-    printf("TERM\n");
-
     parser_unary(parser);
     while (parser_check_token(parser, TOKEN_ASTERISK) ||
            parser_check_token(parser, TOKEN_SLASH)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
         parser_unary(parser);
     }
 }
 
 void parser_expression(Parser *parser) {
-    printf("EXPRESSION\n");
-
     parser_term(parser);
     while (parser_check_token(parser, TOKEN_PLUS) ||
            parser_check_token(parser, TOKEN_MINUS)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
         parser_term(parser);
     }
@@ -146,10 +140,9 @@ bool parser_is_comparison_operator(Parser *parser) {
 }
 
 void parser_comparison(Parser *parser) {
-    printf("COMPARISON\n");
-
     parser_expression(parser);
     if (parser_is_comparison_operator(parser)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
         parser_expression(parser);
     } else {
@@ -163,6 +156,7 @@ void parser_comparison(Parser *parser) {
     }
 
     while (parser_is_comparison_operator(parser)) {
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
         parser_next_token(parser);
         parser_expression(parser);
     }
@@ -170,43 +164,51 @@ void parser_comparison(Parser *parser) {
 
 void parser_statement(Parser *parser) {
     if (parser_check_token(parser, TOKEN_PRINT)) {
-        printf("STATEMENT-PRINT\n");
         parser_next_token(parser);
 
         if (parser_check_token(parser, TOKEN_STRING)) {
+            emitter_emit_str(parser->emitter, "printf(\"");
+            emitter_emit_token_text(parser->emitter, parser->curr_token);
+            emitter_emit_str(parser->emitter, "\\n\");\n");
             parser_next_token(parser);
         } else {
+            emitter_emit_str(parser->emitter, "printf(\"%.2f\\n\", (float)(");
             parser_expression(parser);
+            emitter_emit_str(parser->emitter, "));\n");
         }
 
     } else if (parser_check_token(parser, TOKEN_IF)) {
-        printf("STATEMENT-IF\n");
         parser_next_token(parser);
+        emitter_emit_str(parser->emitter, "if (");
         parser_comparison(parser);
 
         parser_match(parser, TOKEN_THEN);
         parser_nl(parser);
+        emitter_emit_str(parser->emitter, ") {\n");
 
         while (!parser_check_token(parser, TOKEN_ENDIF)) {
             parser_statement(parser);
         }
         parser_match(parser, TOKEN_ENDIF);
+        emitter_emit_str(parser->emitter, "}\n");
 
     } else if (parser_check_token(parser, TOKEN_WHILE)) {
-        printf("STATEMENT-WHILE\n");
         parser_next_token(parser);
+        emitter_emit_str(parser->emitter, "while (");
         parser_comparison(parser);
 
         parser_match(parser, TOKEN_REPEAT);
         parser_nl(parser);
+        emitter_emit_str(parser->emitter, ") {\n");
 
         while (!parser_check_token(parser, TOKEN_ENDWHILE)) {
             parser_statement(parser);
         }
+
         parser_match(parser, TOKEN_ENDWHILE);
+        emitter_emit_str(parser->emitter, "}\n");
 
     } else if (parser_check_token(parser, TOKEN_LABEL)) {
-        printf("STATEMENT-LABEL\n");
         parser_next_token(parser);
 
         if (!token_set_insert(&parser->labels_declared, parser->curr_token)) {
@@ -219,28 +221,56 @@ void parser_statement(Parser *parser) {
             exit(EXIT_FAILURE);
         }
 
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
+        emitter_emit_str(parser->emitter, ":\n");
+
         parser_match(parser, TOKEN_IDENT);
 
     } else if (parser_check_token(parser, TOKEN_GOTO)) {
-        printf("STATEMENT-GOTO\n");
         parser_next_token(parser);
         token_set_insert(&parser->labels_gotoed, parser->curr_token);
+
+        emitter_emit_str(parser->emitter, "goto ");
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
+        emitter_emit_str(parser->emitter, ";\n");
         parser_match(parser, TOKEN_IDENT);
 
     } else if (parser_check_token(parser, TOKEN_LET)) {
-        printf("STATEMENT-LET\n");
         parser_next_token(parser);
-        token_set_insert(&parser->symbols, parser->curr_token);
 
+        if (token_set_insert(&parser->symbols, parser->curr_token)) {
+            emitter_header_emit_str(parser->emitter, "float ");
+            emitter_header_emit_token_text(parser->emitter, parser->curr_token);
+            emitter_header_emit_str(parser->emitter, ";\n");
+        };
+
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
+        emitter_emit_str(parser->emitter, " = ");
         parser_match(parser, TOKEN_IDENT);
         parser_match(parser, TOKEN_EQ);
 
         parser_expression(parser);
+        emitter_emit_str(parser->emitter, ";\n");
 
     } else if (parser_check_token(parser, TOKEN_INPUT)) {
-        printf("STATEMENT-INPUT\n");
         parser_next_token(parser);
-        token_set_insert(&parser->symbols, parser->curr_token);
+
+        if (token_set_insert(&parser->symbols, parser->curr_token)) {
+            emitter_header_emit_str(parser->emitter, "float ");
+            emitter_header_emit_token_text(parser->emitter, parser->curr_token);
+            emitter_header_emit_str(parser->emitter, ";\n");
+        }
+
+        emitter_emit_str(parser->emitter, "if(0 == scanf(\"%f\", &");
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
+        emitter_emit_str(parser->emitter, ")) {\n");
+
+        emitter_emit_token_text(parser->emitter, parser->curr_token);
+        emitter_emit_str(parser->emitter, " = 0;\n");
+
+        emitter_emit_str(parser->emitter, "scanf(\"%*s\");\n");
+        emitter_emit_str(parser->emitter, "}\n");
+
         parser_match(parser, TOKEN_IDENT);
 
     } else {
@@ -258,7 +288,8 @@ void parser_statement(Parser *parser) {
 }
 
 void parser_program(Parser *parser) {
-    printf("PROGRAM\n");
+    emitter_header_emit_str(parser->emitter, "#include <stdio.h>\n");
+    emitter_header_emit_str(parser->emitter, "int main() {\n");
 
     while (parser_check_token(parser, TOKEN_NEWLINE)) {
         parser_next_token(parser);
@@ -267,6 +298,9 @@ void parser_program(Parser *parser) {
     while (!parser_check_token(parser, TOKEN_EOF)) {
         parser_statement(parser);
     }
+
+    emitter_emit_str(parser->emitter, "return 0;\n");
+    emitter_emit_str(parser->emitter, "}\n");
 
     for (size_t i = 0; i < parser->labels_gotoed.len; i++) {
         Token gotoed_token = parser->labels_gotoed.tokens[i];

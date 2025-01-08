@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "emit.h"
 #include "lex.h"
 #include "parse.h"
 
@@ -14,10 +15,12 @@ int main(int argc, char **argv) {
 
     FILE *file = fopen(argv[1], "r");
     if (file == NULL) {
-        fprintf(stderr, "Error: Could not open file\n");
+        fprintf(stderr, "Error: Could not open source file\n");
         exit(EXIT_FAILURE);
     }
 
+    // There's *many* possible errors that should really be handled below,
+    // but leaving as-is for now as this is only a learning exercise!
     fseek(file, 0, SEEK_END);
     long file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
@@ -29,8 +32,11 @@ int main(int argc, char **argv) {
     fclose(file);
 
     Lexer lexer = lexer_new(source);
-    Parser parser = parser_new(&lexer);
+    Emitter emitter = emitter_new();
+    Parser parser = parser_new(&lexer, &emitter);
 
     parser_program(&parser);
-    printf("Parsing completed\n");
+    emitter_write_file(&emitter, "out.c");
+
+    printf("Compiling completed\n");
 }
